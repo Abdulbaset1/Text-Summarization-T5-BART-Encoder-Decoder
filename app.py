@@ -1,8 +1,9 @@
 import streamlit as st
 import os
 import sys
+import subprocess
+import importlib
 import requests
-import time
 
 # Set page configuration
 st.set_page_config(
@@ -10,9 +11,6 @@ st.set_page_config(
     page_icon="📝",
     layout="wide"
 )
-
-# Add current directory to path
-sys.path.append(os.path.dirname(__file__))
 
 # Custom CSS for better styling
 st.markdown("""
@@ -54,44 +52,46 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-def check_dependencies():
-    """Check if all required dependencies are available"""
-    missing_deps = []
+def install_package(package):
+    """Install package using pip"""
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+def check_and_install_dependencies():
+    """Check and install missing dependencies"""
+    required_packages = {
+        'torch': 'torch',
+        'transformers': 'transformers', 
+        'tokenizers': 'tokenizers',
+        'sentencepiece': 'sentencepiece'
+    }
     
-    try:
-        import torch
-        st.session_state.torch_available = True
-    except ImportError:
-        missing_deps.append("torch")
-        st.session_state.torch_available = False
-        
-    try:
-        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-        st.session_state.transformers_available = True
-    except ImportError:
-        missing_deps.append("transformers")
-        st.session_state.transformers_available = False
-        
-    return missing_deps
+    missing_packages = []
+    for import_name, package_name in required_packages.items():
+        try:
+            importlib.import_module(import_name)
+            st.sidebar.success(f"✅ {package_name}")
+        except ImportError:
+            missing_packages.append(package_name)
+            st.sidebar.warning(f"❌ {package_name}")
+    
+    return missing_packages
 
 def download_model():
     """Download the model file from GitHub releases"""
     model_url = "https://github.com/Abdulbaset1/Text-Summarization-T5-BART-Encoder-Decoder/releases/tag/v1/Finalmod.pt"
     local_filename = "Finalmod.pt"
     
-    # Check if model already exists
     if os.path.exists(local_filename):
         file_size = os.path.getsize(local_filename)
-        if file_size > 1000:  # Basic check if file is not empty/corrupted
-            st.success(f"✅ Model file found ({file_size} bytes)")
+        if file_size > 100000:  # At least 100KB
             return local_filename
-        else:
-            st.warning("⚠️ Model file seems corrupted, re-downloading...")
-            os.remove(local_filename)
     
-    # Download the model
     try:
-        st.info("📥 Downloading model file... This may take a few minutes.")
+        st.info("📥 Downloading model file...")
         
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -107,91 +107,68 @@ def download_model():
                 if chunk:
                     f.write(chunk)
                     downloaded_size += len(chunk)
-                    
                     if total_size > 0:
                         progress = min(downloaded_size / total_size, 1.0)
                         progress_bar.progress(progress)
-                        status_text.text(f"Downloaded: {downloaded_size/(1024*1024):.1f} MB")
         
         progress_bar.empty()
         status_text.empty()
         
-        # Verify download
-        if os.path.exists(local_filename) and os.path.getsize(local_filename) > 1000:
-            st.success("✅ Model downloaded successfully!")
+        if os.path.exists(local_filename) and os.path.getsize(local_filename) > 100000:
+            st.success("✅ Model downloaded!")
             return local_filename
         else:
-            st.error("❌ Download failed - file is too small or corrupted")
             return None
             
     except Exception as e:
-        st.error(f"❌ Error downloading model: {str(e)}")
+        st.error(f"❌ Download failed: {str(e)}")
         return None
 
 def simple_summarize(text, max_sentences=3):
-    """Simple extractive summarization as fallback"""
+    """Simple extractive summarization fallback"""
     import re
-    
-    # Split into sentences
     sentences = re.split(r'[.!?]+', text)
     sentences = [s.strip() for s in sentences if s.strip()]
     
     if len(sentences) <= max_sentences:
         return text
     
-    # Take important sentences (first, middle, last)
-    selected_indices = [0]  # First sentence
-    
+    selected = [sentences[0]]
     if len(sentences) > 1:
-        selected_indices.append(len(sentences) // 2)  # Middle sentence
-    
+        selected.append(sentences[len(sentences)//2])
     if len(sentences) > 2:
-        selected_indices.append(-1)  # Last sentence
+        selected.append(sentences[-1])
     
-    selected_indices = selected_indices[:max_sentences]
-    summary_sentences = [sentences[i] for i in selected_indices if 0 <= i < len(sentences)]
-    
-    summary = '. '.join(summary_sentences)
-    if summary and not summary.endswith('.'):
-        summary += '.'
-    
-    return summary
+    summary = '. '.join(selected[:max_sentences])
+    return summary + '.' if not summary.endswith('.') else summary
 
 @st.cache_resource
 def load_ai_model():
-    """Load the AI model with caching"""
-    if not st.session_state.torch_available or not st.session_state.transformers_available:
-        return None, None, None
-    
+    """Load AI model with caching"""
     try:
         import torch
         from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
         
-        # Download model first
         model_path = download_model()
         if not model_path:
             return None, None, None
         
         st.info("🔄 Loading AI model...")
         
-        # Load tokenizer
         tokenizer = AutoTokenizer.from_pretrained("t5-small", use_fast=True)
-        
-        # Load model architecture
         model = AutoModelForSeq2SeqLM.from_pretrained("t5-small")
         
-        # Load trained weights
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model_weights = torch.load(model_path, map_location=device)
         model.load_state_dict(model_weights)
         model.to(device)
         model.eval()
         
-        st.success("✅ AI model loaded successfully!")
+        st.success("✅ AI model ready!")
         return model, tokenizer, device
         
     except Exception as e:
-        st.error(f"❌ Error loading AI model: {str(e)}")
+        st.error(f"❌ AI model loading failed: {str(e)}")
         return None, None, None
 
 def generate_ai_summary(model, tokenizer, device, text, max_length=150):
@@ -219,7 +196,7 @@ def generate_ai_summary(model, tokenizer, device, text, max_length=150):
         return summary
         
     except Exception as e:
-        st.error(f"❌ AI summarization failed: {str(e)}")
+        st.error(f"AI summarization error: {str(e)}")
         return None
 
 def main():
@@ -227,52 +204,69 @@ def main():
     st.markdown('<div class="main-header">📝 Text Summarization App</div>', unsafe_allow_html=True)
     st.markdown("### Using Fine-tuned T5 Model")
     
-    # Initialize session state
-    if 'deps_checked' not in st.session_state:
-        st.session_state.deps_checked = False
-        st.session_state.torch_available = False
-        st.session_state.transformers_available = False
+    # Sidebar with dependency status
+    with st.sidebar:
+        st.markdown("## 🔧 Dependency Status")
+        missing_packages = check_and_install_dependencies()
+        
+        if missing_packages:
+            st.markdown("---")
+            st.warning("Some dependencies are missing. Using basic mode.")
+            if st.button("Try Install Missing Packages"):
+                for package in missing_packages:
+                    if install_package(package):
+                        st.success(f"Installed {package}")
+                    else:
+                        st.error(f"Failed to install {package}")
+                st.rerun()
+        else:
+            st.success("All dependencies loaded!")
+        
+        st.markdown("---")
+        st.markdown("### ℹ️ About")
+        st.markdown("""
+        This app provides text summarization using:
+        - 🤖 AI-Powered (T5 model)
+        - 🔍 Basic extraction
+        
+        **Features:**
+        - Adjustable summary length
+        - Text analysis
+        - Download summaries
+        """)
     
-    # Check dependencies
-    if not st.session_state.deps_checked:
-        with st.spinner("Checking dependencies..."):
-            missing_deps = check_dependencies()
-            st.session_state.deps_checked = True
-            
-            if missing_deps:
-                st.markdown('<div class="warning-box">', unsafe_allow_html=True)
-                st.warning(f"⚠️ Missing dependencies: {', '.join(missing_deps)}")
-                st.info("Using basic summarization method. AI features will be available when dependencies are loaded.")
-                st.markdown('</div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="info-box">', unsafe_allow_html=True)
-                st.success("✅ All dependencies loaded successfully!")
-                st.markdown('</div>', unsafe_allow_html=True)
+    # Check if AI dependencies are available
+    try:
+        import torch
+        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+        ai_available = True
+    except ImportError:
+        ai_available = False
     
-    # Load AI model if dependencies are available
+    # Load AI model if available
     ai_model, ai_tokenizer, ai_device = None, None, None
-    if st.session_state.torch_available and st.session_state.transformers_available:
+    if ai_available:
         ai_model, ai_tokenizer, ai_device = load_ai_model()
     
     # Display status
     col1, col2, col3 = st.columns(3)
     with col1:
-        if st.session_state.torch_available:
-            import torch
-            st.info(f"**PyTorch:** {torch.__version__}")
+        if ai_available:
+            st.success("**PyTorch:** ✅ Available")
         else:
-            st.warning("**PyTorch:** Loading...")
+            st.warning("**PyTorch:** ❌ Missing")
     
     with col2:
         if ai_model:
-            st.success("**AI Model:** ✅ Ready")
+            st.success("**AI Model:** ✅ Loaded")
         else:
-            st.warning("**AI Model:** ⚠️ Basic mode")
+            st.info("**AI Model:** 🔍 Basic Mode")
     
     with col3:
-        st.info("**Summarization:** Available")
+        st.info("**Summarization:** 🟢 Active")
     
-    # Input options
+    # Input section
+    st.markdown("---")
     input_method = st.radio(
         "Choose input method:",
         ["Type text", "Upload text file"],
@@ -313,7 +307,7 @@ def main():
     with col2:
         show_analysis = st.checkbox("Show text analysis", value=True)
     
-    # Generate button
+    # Generate summary
     if st.button("🚀 Generate Summary", type="primary", use_container_width=True):
         if not input_text.strip():
             st.warning("⚠️ Please enter some text to summarize.")
@@ -324,14 +318,14 @@ def main():
                 # Try AI model first, fallback to simple method
                 if ai_model and ai_tokenizer and ai_device:
                     summary = generate_ai_summary(ai_model, ai_tokenizer, ai_device, input_text, max_length)
-                    method_used = "AI-Powered"
+                    method_used = "🤖 AI-Powered"
                 else:
                     summary = simple_summarize(input_text, max_sentences=max_length//50)
-                    method_used = "Basic Extraction"
+                    method_used = "🔍 Basic Extraction"
                 
                 if not summary:
                     summary = simple_summarize(input_text, max_sentences=max_length//50)
-                    method_used = "Basic Extraction (AI failed)"
+                    method_used = "🔍 Basic Extraction (AI failed)"
             
             if summary:
                 # Display results
@@ -343,7 +337,7 @@ def main():
                     
                     display_text = input_text
                     if len(input_text) > 2000:
-                        display_text = input_text[:2000] + "...\n\n[Text truncated for display]"
+                        display_text = input_text[:2000] + "..."
                     st.write(display_text)
                     
                     if show_analysis:
@@ -362,10 +356,10 @@ def main():
                     st.markdown('<div class="summary-box">', unsafe_allow_html=True)
                     st.markdown("### 📋 Generated Summary")
                     
-                    if method_used == "AI-Powered":
-                        st.success("🤖 " + method_used)
+                    if "AI" in method_used:
+                        st.success(method_used)
                     else:
-                        st.info("🔍 " + method_used)
+                        st.info(method_used)
                     
                     st.write(summary)
                     
@@ -381,7 +375,7 @@ def main():
                         st.write(f"- **Compression:** {compression_ratio:.1f}%")
                     st.markdown('</div>', unsafe_allow_html=True)
                 
-                # Download buttons
+                # Download button
                 st.download_button(
                     label="💾 Download Summary",
                     data=summary,
@@ -389,24 +383,6 @@ def main():
                     mime="text/plain",
                     use_container_width=True
                 )
-
-    # Sidebar
-    with st.sidebar:
-        st.markdown("## ℹ️ About")
-        st.markdown("""
-        This app provides text summarization using:
-        
-        - **AI-Powered**: Fine-tuned T5 model
-        - **Basic**: Extract key sentences
-        
-        **Current Mode:** {}
-        """.format("🤖 AI-Powered" if ai_model else "🔍 Basic"))
-        
-        st.markdown("---")
-        st.markdown("**🔄 Refresh Status**")
-        if st.button("Check Dependencies Again"):
-            st.session_state.deps_checked = False
-            st.rerun()
 
 if __name__ == "__main__":
     main()
