@@ -1,8 +1,8 @@
 import streamlit as st
-import requests
-import json
 import os
-from typing import Optional
+import sys
+import requests
+import tempfile
 
 # Set page configuration
 st.set_page_config(
@@ -10,6 +10,18 @@ st.set_page_config(
     page_icon="📝",
     layout="wide"
 )
+
+# Add current directory to path to import model
+sys.path.append(os.path.dirname(__file__))
+
+# Try to import torch and model
+try:
+    import torch
+    from model import TextSummarizer
+    DEPS_AVAILABLE = True
+except ImportError as e:
+    st.error(f"Required packages are loading: {e}")
+    DEPS_AVAILABLE = False
 
 # Custom CSS for better styling
 st.markdown("""
@@ -41,140 +53,118 @@ st.markdown("""
         border-left: 5px solid #ffc107;
         margin: 10px 0;
     }
-    .info-box {
-        background-color: #d1ecf1;
-        padding: 20px;
-        border-radius: 10px;
-        border-left: 5px solid #17a2b8;
-        margin: 10px 0;
+    .stProgress .st-bo {
+        background-color: #1f77b4;
     }
 </style>
 """, unsafe_allow_html=True)
 
-class SummarizationService:
-    def __init__(self):
-        self.methods = ["huggingface_api", "extractive_fallback"]
-        self.current_method = "extractive_fallback"
-        
-    def summarize_with_huggingface(self, text: str, max_length: int = 150) -> Optional[str]:
-        """Use Hugging Face Inference API for summarization"""
-        try:
-            # Using a free model from Hugging Face
-            API_URL = "https://api-inference.huggingface.co/models/facebook/bart-large-cnn"
-            headers = {"Authorization": "Bearer hf_your_token_here"}  # You can get a free token
-            
-            payload = {
-                "inputs": text,
-                "parameters": {
-                    "max_length": max_length,
-                    "min_length": 30,
-                    "do_sample": False
-                }
-            }
-            
-            response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
-            
-            if response.status_code == 200:
-                result = response.json()
-                if isinstance(result, list) and len(result) > 0:
-                    return result[0]['summary_text']
-            return None
-            
-        except Exception as e:
-            st.sidebar.warning(f"Hugging Face API unavailable: {e}")
-            return None
+def download_model_from_github():
+    """Download the model file from GitHub releases"""
+    model_url = "https://github.com/Abdulbaset1/Text-Summarization-T5-BART-Encoder-Decoder/releases/tag/v1/Finalmod.pt"
+    local_filename = "Finalmod.pt"
     
-    def extractive_summarize(self, text: str, max_sentences: int = 3) -> str:
-        """Simple extractive summarization as fallback"""
-        import re
-        
-        # Split into sentences
-        sentences = re.split(r'[.!?]+', text)
-        sentences = [s.strip() for s in sentences if s.strip()]
-        
-        if len(sentences) <= max_sentences:
-            return text
-        
-        # Simple algorithm: take first, middle, and last sentences
-        selected_indices = [0]  # First sentence
-        
-        if len(sentences) > 1:
-            selected_indices.append(len(sentences) // 2)  # Middle sentence
-        
-        if len(sentences) > 2:
-            selected_indices.append(-1)  # Last sentence
-        
-        # Ensure we don't exceed max_sentences
-        selected_indices = selected_indices[:max_sentences]
-        
-        summary_sentences = []
-        for idx in selected_indices:
-            if 0 <= idx < len(sentences):
-                summary_sentences.append(sentences[idx])
-        
-        summary = '. '.join(summary_sentences)
-        if summary and not summary.endswith('.'):
-            summary += '.'
-        
-        return summary
+    # Check if model already exists
+    if os.path.exists(local_filename):
+        st.success("✅ Model file found locally")
+        return local_filename
     
-    def summarize(self, text: str, max_length: int = 150) -> str:
-        """Main summarization method with fallbacks"""
-        # Try Hugging Face API first
-        summary = self.summarize_with_huggingface(text, max_length)
-        if summary:
-            self.current_method = "huggingface_api"
-            return summary
+    # Download with progress bar
+    try:
+        st.info("📥 Downloading model file (this may take a few minutes)...")
         
-        # Fallback to extractive summarization
-        self.current_method = "extractive_fallback"
-        return self.extractive_summarize(text, max_sentences=max_length//50)
+        # Create a progress bar
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        response = requests.get(model_url, stream=True)
+        response.raise_for_status()
+        
+        # Get total file size
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded_size = 0
+        
+        with open(local_filename, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded_size += len(chunk)
+                    
+                    # Update progress
+                    if total_size > 0:
+                        progress = min(downloaded_size / total_size, 1.0)
+                        progress_bar.progress(progress)
+                        status_text.text(f"Downloaded: {downloaded_size/(1024*1024):.1f} MB / {total_size/(1024*1024):.1f} MB")
+        
+        progress_bar.empty()
+        status_text.empty()
+        st.success("✅ Model downloaded successfully!")
+        return local_filename
+        
+    except Exception as e:
+        st.error(f"❌ Error downloading model: {str(e)}")
+        return None
 
-def initialize_summarizer():
-    """Initialize the summarization service"""
-    return SummarizationService()
+@st.cache_resource
+def load_summarizer():
+    """Load the text summarizer with cached resource"""
+    if not DEPS_AVAILABLE:
+        st.error("Required packages not available. Please check the dependencies.")
+        return None
+    
+    try:
+        # Download model first
+        model_path = download_model_from_github()
+        if not model_path:
+            return None
+        
+        # Initialize and load the summarizer
+        st.info("🔄 Loading model into memory...")
+        summarizer = TextSummarizer(model_path=model_path)
+        
+        # Load the model
+        success = summarizer.load_model()
+        if success:
+            st.success("✅ Model loaded successfully!")
+            return summarizer
+        else:
+            st.error("❌ Failed to load model")
+            return None
+            
+    except Exception as e:
+        st.error(f"❌ Error initializing summarizer: {str(e)}")
+        return None
 
 def main():
     # Header
     st.markdown('<div class="main-header">📝 Text Summarization App</div>', unsafe_allow_html=True)
-    st.markdown("### Smart Text Summarization")
+    st.markdown("### Using Your Fine-tuned T5 Model")
     
-    # Initialize service
-    summarizer = initialize_summarizer()
+    # Display system info
+    if DEPS_AVAILABLE:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.info(f"**PyTorch:** {torch.__version__}")
+        with col2:
+            device = "GPU 🔥" if torch.cuda.is_available() else "CPU ⚡"
+            st.info(f"**Device:** {device}")
+        with col3:
+            st.info("**Model:** T5-small Fine-tuned")
     
-    # Sidebar with information
-    with st.sidebar:
-        st.markdown("## ℹ️ About")
-        st.markdown("""
-        This app provides intelligent text summarization using multiple methods.
+    # Load the summarizer
+    with st.spinner("Loading summarization model..."):
+        summarizer = load_summarizer()
+    
+    if summarizer is None:
+        st.markdown('<div class="warning-box">', unsafe_allow_html=True)
+        st.warning("""
+        ⚠️ **Model is still loading or unavailable**
         
-        **✨ Features:**
-        - AI-powered summarization
-        - Adjustable summary length
-        - Support for text input and file upload
-        - Text analysis and compression metrics
-        - Download generated summaries
-        
-        **🔧 Current Method:**
-        - Extractive Summarization
-        - (API methods available with configuration)
+        Please wait while the model loads. If this persists, try refreshing the page.
+        The model file is being downloaded from GitHub releases.
         """)
-        
-        st.markdown("---")
-        st.markdown("**💡 Pro Tip:**")
-        st.markdown("For longer documents, break them into sections for better results.")
-        
-        st.markdown("---")
-        st.markdown("**🔧 Advanced Options**")
-        use_advanced = st.checkbox("Show advanced options", value=False)
-        
-        if use_advanced:
-            st.info("""
-            To use AI-powered summarization:
-            1. Get a free API token from Hugging Face
-            2. Add it to the code in app.py
-            3. The app will automatically use the AI model
-            """)
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.stop()
     
     # Input options
     input_method = st.radio(
@@ -192,46 +182,6 @@ def main():
             placeholder="Paste your article, document, or any long text here...",
             help="Enter at least 100 characters for better results"
         )
-        
-        # Example texts for quick testing
-        st.markdown("**Quick examples:**")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if st.button("Tech Article", use_container_width=True):
-                st.session_state.example_text = """
-                Artificial intelligence is transforming the way we interact with technology. 
-                Recent advances in machine learning have enabled computers to understand and 
-                generate human-like text, opening up new possibilities for automation and 
-                creativity. However, these developments also raise important ethical questions 
-                about privacy, bias, and the future of work. Researchers are actively working 
-                on making AI systems more transparent and accountable.
-                """
-        
-        with col2:
-            if st.button("News Story", use_container_width=True):
-                st.session_state.example_text = """
-                Scientists have made a breakthrough in renewable energy technology. 
-                A new solar panel design has achieved record efficiency levels, 
-                potentially making solar power more affordable and accessible. 
-                The innovation could help accelerate the transition to clean energy 
-                and combat climate change. Further testing is needed before mass production.
-                """
-        
-        with col3:
-            if st.button("Research Paper", use_container_width=True):
-                st.session_state.example_text = """
-                This study examines the impact of social media on mental health. 
-                Through a comprehensive analysis of user behavior and psychological 
-                assessments, we found correlations between excessive social media use 
-                and increased anxiety levels. The research suggests the need for 
-                digital wellness tools and more balanced online engagement practices.
-                """
-        
-        # Apply example text if selected
-        if hasattr(st.session_state, 'example_text'):
-            input_text = st.session_state.example_text
-            
     else:
         uploaded_file = st.file_uploader("Upload a text file", type=['txt'])
         if uploaded_file is not None:
@@ -247,29 +197,44 @@ def main():
     col1, col2, col3 = st.columns(3)
     with col1:
         max_length = st.slider(
-            "Summary length:",
+            "Maximum summary length:",
             min_value=50,
             max_value=300,
             value=150,
-            help="Adjust the length of the generated summary"
+            help="Longer summaries will be more detailed"
         )
     
     with col2:
-        summary_type = st.selectbox(
-            "Summary style:",
-            ["Concise", "Balanced", "Detailed"],
-            help="Choose how detailed you want the summary to be"
+        min_length = st.slider(
+            "Minimum summary length:",
+            min_value=10,
+            max_value=100,
+            value=30,
+            help="Shorter summaries will be more concise"
         )
     
     with col3:
-        show_analysis = st.checkbox("Show analysis", value=True)
+        show_analysis = st.checkbox("Show text analysis", value=True)
     
-    # Map summary type to parameters
-    type_to_sentences = {
-        "Concise": 2,
-        "Balanced": 3,
-        "Detailed": 4
-    }
+    # Advanced options
+    with st.expander("Advanced Options"):
+        col1, col2 = st.columns(2)
+        with col1:
+            num_beams = st.slider(
+                "Number of beams:",
+                min_value=1,
+                max_value=8,
+                value=4,
+                help="Higher values can improve quality but slow down generation"
+            )
+        with col2:
+            temperature = st.slider(
+                "Temperature:",
+                min_value=0.1,
+                max_value=2.0,
+                value=0.8,
+                help="Lower values make output more deterministic"
+            )
     
     # Generate button
     if st.button("🚀 Generate Summary", type="primary", use_container_width=True):
@@ -279,15 +244,17 @@ def main():
             st.warning("⚠️ Please enter at least 50 characters for meaningful summarization.")
         else:
             with st.spinner("🔍 Analyzing text and generating summary..."):
-                # Adjust parameters based on selection
-                if summary_type != "Balanced":
-                    max_sentences = type_to_sentences[summary_type]
-                    custom_max_length = max_length
-                else:
-                    max_sentences = 3
-                    custom_max_length = max_length
-                
-                summary = summarizer.summarize(input_text, custom_max_length)
+                try:
+                    summary = summarizer.summarize(
+                        input_text, 
+                        max_length=max_length,
+                        min_length=min_length,
+                        num_beams=num_beams,
+                        temperature=temperature
+                    )
+                except Exception as e:
+                    st.error(f"❌ Error during summarization: {str(e)}")
+                    summary = None
             
             if summary:
                 # Display results in columns
@@ -313,31 +280,12 @@ def main():
                         st.write(f"- **Words:** {word_count}")
                         st.write(f"- **Characters:** {char_count}")
                         st.write(f"- **Sentences:** {sentence_count}")
-                        
-                        # Readability estimate
-                        if word_count > 0 and sentence_count > 0:
-                            avg_sentence_length = word_count / sentence_count
-                            if avg_sentence_length < 15:
-                                readability = "Easy"
-                            elif avg_sentence_length < 25:
-                                readability = "Moderate"
-                            else:
-                                readability = "Complex"
-                            st.write(f"- **Readability:** {readability}")
-                    
                     st.markdown('</div>', unsafe_allow_html=True)
                 
                 with col2:
                     st.markdown('<div class="summary-box">', unsafe_allow_html=True)
                     st.markdown("### 📋 Generated Summary")
-                    
-                    # Color code based on method
-                    if summarizer.current_method == "huggingface_api":
-                        st.success("🤖 AI-Powered Summary")
-                    else:
-                        st.info("🔍 Smart Extract Summary")
-                    
-                    st.write(summary)
+                    st.success(summary)
                     
                     if show_analysis:
                         st.markdown("---")
@@ -348,17 +296,15 @@ def main():
                         st.write("**📈 Summary Analysis:**")
                         st.write(f"- **Words:** {summary_word_count}")
                         st.write(f"- **Characters:** {summary_char_count}")
-                        st.write(f"- **Compression:** {compression_ratio:.1f}%")
+                        st.write(f"- **Compression Ratio:** {compression_ratio:.1f}%")
                         
                         # Quality indicator
                         if compression_ratio > 80:
-                            quality = "⭐ High compression"
+                            st.write("- **Quality:** ⭐ High compression")
                         elif compression_ratio > 50:
-                            quality = "⭐⭐ Good balance"
+                            st.write("- **Quality:** ⭐⭐ Good balance")
                         else:
-                            quality = "⭐⭐⭐ Detailed"
-                        st.write(f"- **Style:** {quality}")
-                    
+                            st.write("- **Quality:** ⭐⭐⭐ Detailed summary")
                     st.markdown('</div>', unsafe_allow_html=True)
                 
                 # Download buttons
@@ -367,27 +313,55 @@ def main():
                     st.download_button(
                         label="💾 Download Summary",
                         data=summary,
-                        file_name="summary.txt",
+                        file_name="generated_summary.txt",
                         mime="text/plain",
                         use_container_width=True
                     )
                 with col2:
                     st.download_button(
-                        label="💾 Full Report",
-                        data=f"ORIGINAL TEXT:\n{input_text}\n\nSUMMARY:\n{summary}",
-                        file_name="full_report.txt",
+                        label="💾 Download Original + Summary",
+                        data=f"ORIGINAL TEXT:\n{input_text}\n\nGENERATED SUMMARY:\n{summary}",
+                        file_name="original_and_summary.txt",
                         mime="text/plain",
                         use_container_width=True
                     )
-                
-                # Tips for improvement
-                with st.expander("💡 Tips for better summaries"):
-                    st.markdown("""
-                    - **For longer documents:** Break into sections of 500-1000 words
-                    - **For better accuracy:** Ensure the text is well-structured with clear sentences
-                    - **For technical content:** Consider summarizing section by section
-                    - **Current method:** {}
-                    """.format("AI-Powered (BART model)" if summarizer.current_method == "huggingface_api" else "Extractive (Key sentences)"))
+
+    # Sidebar with information
+    with st.sidebar:
+        st.markdown("## ℹ️ About")
+        st.markdown("""
+        This app uses your **fine-tuned T5 model** for text summarization.
+        
+        **✨ Features:**
+        - Uses your custom trained model
+        - Adjustable summary length
+        - Advanced generation parameters
+        - Text analysis and metrics
+        - Download functionality
+        
+        **🚀 How to use:**
+        1. Enter or upload your text
+        2. Adjust parameters if needed
+        3. Click 'Generate Summary'
+        4. View and download results
+        """)
+        
+        st.markdown("---")
+        st.markdown("**🔧 Model Info:**")
+        st.markdown("- **Base Model:** T5-small")
+        st.markdown("- **Training:** Custom fine-tuned")
+        st.markdown("- **Framework:** PyTorch")
+        
+        st.markdown("---")
+        if DEPS_AVAILABLE:
+            st.markdown("**📊 System Info:**")
+            st.markdown(f"- **Device:** {'GPU 🔥' if torch.cuda.is_available() else 'CPU ⚡'}")
+            st.markdown(f"- **PyTorch:** {torch.__version__}")
+        
+        # Clear cache button
+        if st.button("🔄 Clear Cache", use_container_width=True):
+            st.cache_resource.clear()
+            st.success("Cache cleared! Reload the page.")
 
 if __name__ == "__main__":
     main()
