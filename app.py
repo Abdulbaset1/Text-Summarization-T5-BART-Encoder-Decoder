@@ -1,9 +1,8 @@
 import streamlit as st
-import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import requests
 import os
-import tempfile
+import sys
+from urllib.parse import urljoin
 
 # Set page configuration
 st.set_page_config(
@@ -11,6 +10,24 @@ st.set_page_config(
     page_icon="📝",
     layout="wide"
 )
+
+# Try to import torch with better error handling
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError as e:
+    st.error(f"PyTorch not available: {e}")
+    TORCH_AVAILABLE = False
+
+if TORCH_AVAILABLE:
+    try:
+        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+        TRANSFORMERS_AVAILABLE = True
+    except ImportError as e:
+        st.error(f"Transformers not available: {e}")
+        TRANSFORMERS_AVAILABLE = False
+else:
+    TRANSFORMERS_AVAILABLE = False
 
 # Custom CSS for better styling
 st.markdown("""
@@ -35,11 +52,33 @@ st.markdown("""
         border-left: 5px solid #28a745;
         margin: 10px 0;
     }
-    .stProgress .st-bo {
-        background-color: #1f77b4;
+    .warning-box {
+        background-color: #fff3cd;
+        padding: 20px;
+        border-radius: 10px;
+        border-left: 5px solid #ffc107;
+        margin: 10px 0;
     }
 </style>
 """, unsafe_allow_html=True)
+
+def setup_environment():
+    """Check if all required packages are available"""
+    if not TORCH_AVAILABLE or not TRANSFORMERS_AVAILABLE:
+        st.markdown('<div class="warning-box">', unsafe_allow_html=True)
+        st.warning("""
+        ⚠️ **Required packages are still loading...**
+        
+        This might take a few moments. If this message persists, please refresh the page.
+        
+        **Packages being loaded:**
+        - PyTorch
+        - Transformers
+        - Tokenizers
+        """)
+        st.markdown('</div>', unsafe_allow_html=True)
+        return False
+    return True
 
 def download_model():
     """Download the model file from GitHub releases if not exists"""
@@ -90,11 +129,14 @@ def download_model():
 @st.cache_resource
 def load_model():
     """Load the trained model and tokenizer"""
+    if not setup_environment():
+        return None, None, None
+        
     try:
         # Download model first
         model_path = download_model()
         if not model_path:
-            return None, None
+            return None, None, None
         
         # Model configuration
         MODEL_NAME = "t5-small"
@@ -156,17 +198,48 @@ def generate_summary(model, tokenizer, device, text, max_length=150):
         st.error(f"❌ Error generating summary: {str(e)}")
         return None
 
+def simple_summarize(text, max_length=150):
+    """Simple rule-based summarization as fallback"""
+    # Basic sentence extraction (fallback method)
+    sentences = text.split('. ')
+    if len(sentences) <= 3:
+        return text
+    
+    # Take first, middle, and last sentences
+    important_sentences = [
+        sentences[0],
+        sentences[len(sentences)//2],
+        sentences[-1]
+    ]
+    
+    summary = '. '.join([s.strip() for s in important_sentences if s.strip()])
+    return summary + '.'
+
 def main():
     # Header
     st.markdown('<div class="main-header">📝 Text Summarization App</div>', unsafe_allow_html=True)
     st.markdown("### Using Fine-tuned T5 Model")
     
-    # Load model
-    model, tokenizer, device = load_model()
+    # Check environment first
+    if not setup_environment():
+        st.info("🔄 Please wait while we set up the environment...")
+        st.stop()
     
-    if model is None or tokenizer is None:
-        st.error("Failed to load the model. Please check the console for errors.")
-        return
+    # Load model
+    with st.spinner("Loading model... This may take a moment."):
+        model, tokenizer, device = load_model()
+    
+    model_available = model is not None and tokenizer is not None
+    
+    if not model_available:
+        st.markdown('<div class="warning-box">', unsafe_allow_html=True)
+        st.warning("""
+        ⚠️ **Model is still loading or unavailable**
+        
+        You can still try the app with our basic summarization feature.
+        The AI model will automatically activate when ready.
+        """)
+        st.markdown('</div>', unsafe_allow_html=True)
     
     # Input options
     input_method = st.radio(
@@ -185,17 +258,13 @@ def main():
             help="Enter at least 100 characters for better results"
         )
     else:
-        uploaded_file = st.file_uploader("Upload a text file", type=['txt', 'pdf', 'docx'])
+        uploaded_file = st.file_uploader("Upload a text file", type=['txt'])
         if uploaded_file is not None:
-            # For simplicity, only handling txt files in this example
-            if uploaded_file.type == "text/plain":
-                input_text = uploaded_file.read().decode("utf-8")
-                st.text_area("Uploaded text preview:", input_text[:1000] + "..." if len(input_text) > 1000 else input_text, height=150)
-            else:
-                st.warning("Please upload a .txt file. Other formats coming soon!")
+            input_text = uploaded_file.read().decode("utf-8")
+            st.text_area("Uploaded text preview:", input_text[:1000] + "..." if len(input_text) > 1000 else input_text, height=150)
     
     # Configuration
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
         max_length = st.slider(
             "Maximum summary length:",
@@ -206,26 +275,21 @@ def main():
         )
     
     with col2:
-        min_input_length = st.number_input(
-            "Minimum input length:",
-            min_value=50,
-            max_value=1000,
-            value=100,
-            help="Skip summarization for very short texts"
-        )
-    
-    with col3:
         show_analysis = st.checkbox("Show text analysis", value=True)
     
     # Generate button
     if st.button("🚀 Generate Summary", type="primary", use_container_width=True):
         if not input_text.strip():
             st.warning("⚠️ Please enter some text to summarize.")
-        elif len(input_text.strip()) < min_input_length:
-            st.warning(f"⚠️ Please enter at least {min_input_length} characters for meaningful summarization.")
+        elif len(input_text.strip()) < 50:
+            st.warning("⚠️ Please enter at least 50 characters for meaningful summarization.")
         else:
             with st.spinner("🔍 Analyzing text and generating summary..."):
-                summary = generate_summary(model, tokenizer, device, input_text, max_length)
+                if model_available:
+                    summary = generate_summary(model, tokenizer, device, input_text, max_length)
+                else:
+                    summary = simple_summarize(input_text, max_length)
+                    st.info("ℹ️ Using basic summarization (AI model is still loading)")
             
             if summary:
                 # Display results in columns
@@ -263,34 +327,16 @@ def main():
                         st.write(f"- **Words:** {summary_word_count}")
                         st.write(f"- **Characters:** {summary_char_count}")
                         st.write(f"- **Compression Ratio:** {compression_ratio:.1f}%")
-                        
-                        # Quality indicator
-                        if compression_ratio > 80:
-                            st.write("- **Quality:** ⭐ High compression")
-                        elif compression_ratio > 50:
-                            st.write("- **Quality:** ⭐⭐ Good balance")
-                        else:
-                            st.write("- **Quality:** ⭐⭐⭐ Detailed summary")
                     st.markdown('</div>', unsafe_allow_html=True)
                 
-                # Download buttons
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.download_button(
-                        label="💾 Download Summary",
-                        data=summary,
-                        file_name="generated_summary.txt",
-                        mime="text/plain",
-                        use_container_width=True
-                    )
-                with col2:
-                    st.download_button(
-                        label="💾 Download Original + Summary",
-                        data=f"ORIGINAL TEXT:\n{input_text}\n\nGENERATED SUMMARY:\n{summary}",
-                        file_name="original_and_summary.txt",
-                        mime="text/plain",
-                        use_container_width=True
-                    )
+                # Download button for summary
+                st.download_button(
+                    label="💾 Download Summary",
+                    data=summary,
+                    file_name="generated_summary.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
 
     # Sidebar with information
     with st.sidebar:
@@ -305,28 +351,15 @@ def main():
         - Text analysis and compression metrics
         - Download generated summaries
         
-        **🚀 How to use:**
-        1. Enter or upload your text
-        2. Adjust summary length if needed
-        3. Click 'Generate Summary'
-        4. View and download the result
-        """)
+        **Status:** {}
+        """.format("✅ Model Ready" if model_available else "🔄 Loading Model..."))
         
         st.markdown("---")
-        st.markdown("**🔧 Model Info:**")
+        st.markdown("**🔧 Technical Info:**")
+        if TORCH_AVAILABLE:
+            st.markdown(f"- **PyTorch:** {torch.__version__}")
         st.markdown("- **Base Model:** T5-small")
-        st.markdown("- **Task:** Text Summarization")
         st.markdown("- **Framework:** PyTorch")
-        
-        st.markdown("---")
-        st.markdown("**📊 System Info:**")
-        st.markdown(f"- **Device:** {'GPU 🔥' if torch.cuda.is_available() else 'CPU ⚡'}")
-        st.markdown(f"- **PyTorch:** {torch.__version__}")
-        
-        # Clear cache button
-        if st.button("🔄 Clear Cache", use_container_width=True):
-            st.cache_resource.clear()
-            st.success("Cache cleared! Reload the page to refresh.")
 
 if __name__ == "__main__":
     main()
