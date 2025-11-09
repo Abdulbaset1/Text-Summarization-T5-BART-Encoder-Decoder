@@ -1,9 +1,9 @@
 import streamlit as st
 import os
 import sys
+import requests
 import subprocess
 import importlib
-import requests
 
 # Set page configuration
 st.set_page_config(
@@ -52,33 +52,63 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-def install_package(package):
-    """Install package using pip"""
+def install_missing_packages():
+    """Install missing packages using pip"""
+    packages_to_install = []
+    
+    # Check which packages are missing
     try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-        return True
-    except subprocess.CalledProcessError:
-        return False
+        import torch
+    except ImportError:
+        packages_to_install.append("torch")
+    
+    try:
+        import transformers
+    except ImportError:
+        packages_to_install.append("transformers")
+    
+    try:
+        import tokenizers
+    except ImportError:
+        packages_to_install.append("tokenizers")
+    
+    try:
+        import sentencepiece
+    except ImportError:
+        packages_to_install.append("sentencepiece")
+    
+    if packages_to_install:
+        st.info(f"Installing missing packages: {', '.join(packages_to_install)}")
+        try:
+            for package in packages_to_install:
+                subprocess.check_call([
+                    sys.executable, "-m", "pip", "install", package,
+                    "--user", "--no-warn-script-location"
+                ])
+            st.success("Packages installed successfully! Please refresh the page.")
+            return True
+        except Exception as e:
+            st.error(f"Failed to install packages: {e}")
+            return False
+    return True
 
-def check_and_install_dependencies():
-    """Check and install missing dependencies"""
-    required_packages = {
-        'torch': 'torch',
-        'transformers': 'transformers', 
-        'tokenizers': 'tokenizers',
-        'sentencepiece': 'sentencepiece'
+def check_dependencies():
+    """Check if all required dependencies are available"""
+    dependencies = {
+        'torch': False,
+        'transformers': False,
+        'tokenizers': False,
+        'sentencepiece': False
     }
     
-    missing_packages = []
-    for import_name, package_name in required_packages.items():
+    for dep in dependencies.keys():
         try:
-            importlib.import_module(import_name)
-            st.sidebar.success(f"✅ {package_name}")
+            importlib.import_module(dep)
+            dependencies[dep] = True
         except ImportError:
-            missing_packages.append(package_name)
-            st.sidebar.warning(f"❌ {package_name}")
+            dependencies[dep] = False
     
-    return missing_packages
+    return dependencies
 
 def download_model():
     """Download the model file from GitHub releases"""
@@ -110,18 +140,21 @@ def download_model():
                     if total_size > 0:
                         progress = min(downloaded_size / total_size, 1.0)
                         progress_bar.progress(progress)
+                        if downloaded_size % (1024 * 1024) == 0:  # Update every MB
+                            status_text.text(f"Downloaded: {downloaded_size/(1024*1024):.1f} MB")
         
         progress_bar.empty()
         status_text.empty()
         
         if os.path.exists(local_filename) and os.path.getsize(local_filename) > 100000:
-            st.success("✅ Model downloaded!")
+            st.success("✅ Model downloaded successfully!")
             return local_filename
         else:
+            st.error("❌ Download failed - file is too small")
             return None
             
     except Exception as e:
-        st.error(f"❌ Download failed: {str(e)}")
+        st.error(f"❌ Error downloading model: {str(e)}")
         return None
 
 def simple_summarize(text, max_sentences=3):
@@ -133,11 +166,11 @@ def simple_summarize(text, max_sentences=3):
     if len(sentences) <= max_sentences:
         return text
     
-    selected = [sentences[0]]
+    selected = [sentences[0]]  # First sentence
     if len(sentences) > 1:
-        selected.append(sentences[len(sentences)//2])
+        selected.append(sentences[len(sentences)//2])  # Middle sentence
     if len(sentences) > 2:
-        selected.append(sentences[-1])
+        selected.append(sentences[-1])  # Last sentence
     
     summary = '. '.join(selected[:max_sentences])
     return summary + '.' if not summary.endswith('.') else summary
@@ -155,25 +188,32 @@ def load_ai_model():
         
         st.info("🔄 Loading AI model...")
         
+        # Load tokenizer
         tokenizer = AutoTokenizer.from_pretrained("t5-small", use_fast=True)
+        
+        # Load model architecture
         model = AutoModelForSeq2SeqLM.from_pretrained("t5-small")
         
+        # Load trained weights
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model_weights = torch.load(model_path, map_location=device)
         model.load_state_dict(model_weights)
         model.to(device)
         model.eval()
         
-        st.success("✅ AI model ready!")
+        st.success("✅ AI model loaded successfully!")
         return model, tokenizer, device
         
     except Exception as e:
-        st.error(f"❌ AI model loading failed: {str(e)}")
+        st.error(f"❌ Error loading AI model: {str(e)}")
         return None, None, None
 
 def generate_ai_summary(model, tokenizer, device, text, max_length=150):
     """Generate summary using AI model"""
     try:
+        import torch
+        
+        # Prepare input
         inputs = tokenizer(
             "summarize: " + text,
             return_tensors="pt",
@@ -182,6 +222,7 @@ def generate_ai_summary(model, tokenizer, device, text, max_length=150):
             padding=True
         ).to(device)
         
+        # Generate summary
         with torch.no_grad():
             output = model.generate(
                 **inputs,
@@ -192,11 +233,12 @@ def generate_ai_summary(model, tokenizer, device, text, max_length=150):
                 length_penalty=2.0
             )
         
+        # Decode output
         summary = tokenizer.decode(output[0], skip_special_tokens=True)
         return summary
         
     except Exception as e:
-        st.error(f"AI summarization error: {str(e)}")
+        st.error(f"❌ AI summarization failed: {str(e)}")
         return None
 
 def main():
@@ -204,30 +246,43 @@ def main():
     st.markdown('<div class="main-header">📝 Text Summarization App</div>', unsafe_allow_html=True)
     st.markdown("### Using Fine-tuned T5 Model")
     
+    # Check dependencies
+    dependencies = check_dependencies()
+    
     # Sidebar with dependency status
     with st.sidebar:
         st.markdown("## 🔧 Dependency Status")
-        missing_packages = check_and_install_dependencies()
         
-        if missing_packages:
+        all_loaded = all(dependencies.values())
+        
+        if not all_loaded:
+            st.markdown('<div class="warning-box">', unsafe_allow_html=True)
+            st.warning("Some AI dependencies are missing")
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            for dep, loaded in dependencies.items():
+                if loaded:
+                    st.success(f"✅ {dep}")
+                else:
+                    st.error(f"❌ {dep}")
+            
             st.markdown("---")
-            st.warning("Some dependencies are missing. Using basic mode.")
-            if st.button("Try Install Missing Packages"):
-                for package in missing_packages:
-                    if install_package(package):
-                        st.success(f"Installed {package}")
-                    else:
-                        st.error(f"Failed to install {package}")
-                st.rerun()
+            if st.button("🔄 Install Missing Packages", use_container_width=True):
+                if install_missing_packages():
+                    st.rerun()
         else:
-            st.success("All dependencies loaded!")
+            st.markdown('<div class="info-box">', unsafe_allow_html=True)
+            st.success("All AI dependencies loaded!")
+            st.markdown('</div>', unsafe_allow_html=True)
+            for dep, loaded in dependencies.items():
+                st.success(f"✅ {dep}")
         
         st.markdown("---")
         st.markdown("### ℹ️ About")
         st.markdown("""
         This app provides text summarization using:
         - 🤖 AI-Powered (T5 model)
-        - 🔍 Basic extraction
+        - 🔍 Basic extraction (fallback)
         
         **Features:**
         - Adjustable summary length
@@ -235,24 +290,20 @@ def main():
         - Download summaries
         """)
     
-    # Check if AI dependencies are available
-    try:
-        import torch
-        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-        ai_available = True
-    except ImportError:
-        ai_available = False
-    
-    # Load AI model if available
+    # Load AI model if dependencies are available
     ai_model, ai_tokenizer, ai_device = None, None, None
-    if ai_available:
+    if all_loaded:
         ai_model, ai_tokenizer, ai_device = load_ai_model()
     
     # Display status
     col1, col2, col3 = st.columns(3)
     with col1:
-        if ai_available:
-            st.success("**PyTorch:** ✅ Available")
+        if dependencies['torch']:
+            try:
+                import torch
+                st.success(f"**PyTorch:** {torch.__version__}")
+            except:
+                st.success("**PyTorch:** ✅ Available")
         else:
             st.warning("**PyTorch:** ❌ Missing")
     
@@ -263,7 +314,7 @@ def main():
             st.info("**AI Model:** 🔍 Basic Mode")
     
     with col3:
-        st.info("**Summarization:** 🟢 Active")
+        st.info("**Status:** 🟢 Active")
     
     # Input section
     st.markdown("---")
@@ -282,6 +333,31 @@ def main():
             placeholder="Paste your article, document, or any long text here...",
             help="Enter at least 100 characters for better results"
         )
+        
+        # Example texts
+        st.markdown("**Try these examples:**")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Technology Article", use_container_width=True):
+                st.session_state.demo_text = """
+                Artificial intelligence is transforming various industries by automating complex tasks 
+                and providing insights from large datasets. Machine learning algorithms can now 
+                recognize patterns that were previously undetectable to humans. However, these 
+                advancements also raise important ethical questions about privacy and job displacement. 
+                Researchers are working on developing AI systems that are transparent and accountable.
+                """
+        with col2:
+            if st.button("News Story", use_container_width=True):
+                st.session_state.demo_text = """
+                Scientists have discovered a new method for renewable energy storage that could 
+                revolutionize how we power our cities. The breakthrough involves using advanced 
+                materials to store solar energy more efficiently. This development comes at a 
+                critical time as the world seeks solutions to climate change and energy security.
+                """
+        
+        if hasattr(st.session_state, 'demo_text'):
+            input_text = st.session_state.demo_text
+            
     else:
         uploaded_file = st.file_uploader("Upload a text file", type=['txt'])
         if uploaded_file is not None:
@@ -319,13 +395,12 @@ def main():
                 if ai_model and ai_tokenizer and ai_device:
                     summary = generate_ai_summary(ai_model, ai_tokenizer, ai_device, input_text, max_length)
                     method_used = "🤖 AI-Powered"
+                    if not summary:
+                        summary = simple_summarize(input_text, max_sentences=max_length//50)
+                        method_used = "🔍 Basic Extraction (AI failed)"
                 else:
                     summary = simple_summarize(input_text, max_sentences=max_length//50)
                     method_used = "🔍 Basic Extraction"
-                
-                if not summary:
-                    summary = simple_summarize(input_text, max_sentences=max_length//50)
-                    method_used = "🔍 Basic Extraction (AI failed)"
             
             if summary:
                 # Display results
