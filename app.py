@@ -1,7 +1,13 @@
 import streamlit as st
-from peft import PeftModel, PeftConfig
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 import torch
+
+# Check for required packages
+try:
+    from peft import PeftModel
+    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+except ImportError as e:
+    st.error(f"Missing required package: {e}")
+    st.stop()
 
 # Set page config
 st.set_page_config(
@@ -16,20 +22,26 @@ def load_model():
     try:
         # Your model details
         base_model = "t5-small"
-        peft_model_id = "basit1878/t5-small-lora-summarizer"  # Your model
+        peft_model_id = "basit1878/t5-small-lora-summarizer"
         
-        # Load base model
-        model = AutoModelForSeq2SeqLM.from_pretrained(base_model)
+        st.info("📥 Downloading base model...")
+        model = AutoModelForSeq2SeqLM.from_pretrained(
+            base_model,
+            torch_dtype=torch.float16,
+            low_cpu_mem_usage=True
+        )
         
-        # Load LoRA adapter
+        st.info("📥 Loading LoRA adapter...")
         model = PeftModel.from_pretrained(model, peft_model_id)
         
-        # Load tokenizer
+        st.info("📥 Loading tokenizer...")
         tokenizer = AutoTokenizer.from_pretrained(peft_model_id)
         
+        st.success("✅ Model loaded successfully!")
         return model, tokenizer
+        
     except Exception as e:
-        st.error(f"Error loading model: {e}")
+        st.error(f"Error loading model: {str(e)}")
         return None, None
 
 def summarize_text(text, model, tokenizer, max_length=150):
@@ -81,33 +93,18 @@ def main():
     """)
     
     # Load model
-    with st.spinner("Loading model... This may take a minute."):
-        model, tokenizer = load_model()
+    model, tokenizer = load_model()
     
     if model is None or tokenizer is None:
-        st.error("Failed to load the model. Please check the connection.")
+        st.error("Failed to load the model. Please check the connection and try again.")
         return
     
     # Input section
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        text_input = st.text_area(
-            "Enter text to summarize:",
-            height=300,
-            placeholder="Paste your article, document, or any long text here..."
-        )
-    
-    with col2:
-        st.subheader("Example Text")
-        st.markdown("""
-        **Sample input:**
-        ```
-        The quick brown fox jumps over the lazy dog. 
-        This sentence contains all letters in the alphabet. 
-        It's often used for typing practice and font demonstrations.
-        ```
-        """)
+    text_input = st.text_area(
+        "Enter text to summarize:",
+        height=300,
+        placeholder="Paste your article, document, or any long text here..."
+    )
     
     # Generate button
     if st.button("🚀 Generate Summary", type="primary"):
@@ -126,17 +123,11 @@ def main():
             with col2:
                 st.metric("Summary Length", f"{len(summary.split())} words")
             with col3:
-                reduction = ((len(text_input.split()) - len(summary.split())) / len(text_input.split())) * 100
-                st.metric("Reduction", f"{reduction:.1f}%")
+                if len(text_input.split()) > 0:
+                    reduction = ((len(text_input.split()) - len(summary.split())) / len(text_input.split())) * 100
+                    st.metric("Reduction", f"{reduction:.1f}%")
         else:
             st.warning("Please enter some text to summarize.")
-
-    # Footer
-    st.markdown("---")
-    st.markdown(
-        "**Model**: T5-small with LoRA fine-tuning | "
-        "**Built with**: Streamlit & Hugging Face"
-    )
 
 if __name__ == "__main__":
     main()
