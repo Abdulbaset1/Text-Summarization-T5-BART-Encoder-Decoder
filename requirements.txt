@@ -1,7 +1,2 @@
 streamlit
-transformers
-torch --index-url https://download.pytorch.org/whl/cpu
-peft
-accelerate
-sentencepiece
-protobuf
+requests
