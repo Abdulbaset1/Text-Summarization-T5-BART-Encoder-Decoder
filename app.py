@@ -1,7 +1,6 @@
 import streamlit as st
-import torch
-from peft import PeftModel
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+import requests
+import json
 
 # Set page config
 st.set_page_config(
@@ -10,69 +9,24 @@ st.set_page_config(
     layout="wide"
 )
 
-@st.cache_resource
-def load_model():
-    """Load the LoRA model and tokenizer"""
-    try:
-        # Your model details
-        base_model = "t5-small"
-        peft_model_id = "basit1878/t5-small-lora-summarizer"
-        
-        # Load model
-        model = AutoModelForSeq2SeqLM.from_pretrained(base_model)
-        model = PeftModel.from_pretrained(model, peft_model_id)
-        tokenizer = AutoTokenizer.from_pretrained(peft_model_id)
-        
-        return model, tokenizer
-    except Exception as e:
-        st.error(f"Error loading model: {e}")
-        return None, None
+# Hugging Face API details
+API_URL = "https://api-inference.huggingface.co/models/basit1878/t5-small-lora-summarizer"
+headers = {"Authorization": "Bearer YOUR_HF_TOKEN_HERE"}
 
-def summarize_text(text, model, tokenizer, max_length=150):
-    """Generate summary for the input text"""
+def query_huggingface(payload):
+    """Send request to Hugging Face API"""
     try:
-        # Prepare input
-        inputs = tokenizer(
-            "summarize: " + text,
-            return_tensors="pt",
-            max_length=512,
-            truncation=True
-        )
-        
-        # Generate summary
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_length=max_length,
-                num_beams=4,
-                early_stopping=True
-            )
-        
-        # Decode output
-        summary = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        return summary
+        response = requests.post(API_URL, headers=headers, json=payload)
+        return response.json()
     except Exception as e:
-        return f"Error generating summary: {e}"
+        return {"error": str(e)}
 
-# Main app
 def main():
     st.title("📝 AI Text Summarizer")
     st.markdown("""
     This app uses a fine-tuned T5 model with LoRA to generate concise summaries of your text.
     **Model:** [basit1878/t5-small-lora-summarizer](https://huggingface.co/basit1878/t5-small-lora-summarizer)
     """)
-    
-    # Sidebar
-    st.sidebar.title("Settings")
-    max_length = st.sidebar.slider("Summary Length", 50, 250, 150, 10)
-    
-    # Load model
-    with st.spinner("Loading model... This may take a minute."):
-        model, tokenizer = load_model()
-    
-    if model is None or tokenizer is None:
-        st.error("Failed to load the model. Please check the connection.")
-        return
     
     # Input section
     text_input = st.text_area(
@@ -81,26 +35,40 @@ def main():
         placeholder="Paste your article, document, or any long text here..."
     )
     
+    # Instructions for getting API token
+    with st.expander("🔑 How to get API Token"):
+        st.markdown("""
+        1. Go to [Hugging Face Settings](https://huggingface.co/settings/tokens)
+        2. Create a new token with **Write** access
+        3. Replace `YOUR_HF_TOKEN_HERE` in the code with your actual token
+        4. Redeploy the app
+        """)
+    
     # Generate button
     if st.button("🚀 Generate Summary", type="primary"):
         if text_input.strip():
             with st.spinner("Generating summary..."):
-                summary = summarize_text(text_input, model, tokenizer, max_length)
-            
-            st.success("Summary Generated!")
-            st.subheader("📄 Summary:")
-            st.write(summary)
-            
-            # Show stats
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Original Length", f"{len(text_input.split())} words")
-            with col2:
-                st.metric("Summary Length", f"{len(summary.split())} words")
-            with col3:
-                if len(text_input.split()) > 0:
-                    reduction = ((len(text_input.split()) - len(summary.split())) / len(text_input.split())) * 100
-                    st.metric("Reduction", f"{reduction:.1f}%")
+                # Prepare payload
+                payload = {
+                    "inputs": "summarize: " + text_input,
+                    "parameters": {
+                        "max_length": 150,
+                        "min_length": 30,
+                        "do_sample": False
+                    }
+                }
+                
+                # Call Hugging Face API
+                result = query_huggingface(payload)
+                
+                # Display result
+                if isinstance(result, list) and len(result) > 0:
+                    summary = result[0].get('generated_text', 'No summary generated')
+                    st.success("Summary Generated!")
+                    st.subheader("📄 Summary:")
+                    st.write(summary)
+                else:
+                    st.error(f"Error: {result}")
         else:
             st.warning("Please enter some text to summarize.")
 
