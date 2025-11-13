@@ -10,8 +10,8 @@ st.set_page_config(
 )
 
 # Hugging Face API details
-API_URL = "https://api-inference.huggingface.co/models/basit1878/t5-small-lora-summarizer"
-headers = {"Authorization": "Bearer YOUR_HF_TOKEN_HERE"}
+API_URL = " https://router.huggingface.co/hf-inference/models/basit1878/t5-small-lora-summarizer"
+headers = {"Authorization": "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"}
 
 def query_huggingface(payload):
     """Send request to Hugging Face API"""
